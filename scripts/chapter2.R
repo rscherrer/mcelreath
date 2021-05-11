@@ -1,3 +1,32 @@
+## ---------------------------
+##
+## Script name: chapter2.R
+##
+## Purpose of script:
+##
+## Exercises of chapter 2 from the book
+##
+## How to use:
+##
+## Just run it
+##
+## Author: Raphael Scherrer
+##
+## Date Created: 2021-05-11
+##
+## This script comes with no guarantee whatsoever.
+##
+## Copyright (c) Raphael Scherrer, 2021
+##
+## Find me on GitHub at https://github.com/rscherrer
+##
+## Email:
+## r.scherrer@rug.nl
+## raphael.scherrer@evobio.eu
+## raph.rjfs@hotmail.fr
+##
+## ---------------------------
+
 # Exercises from chapter 2
 
 rm(list = ls())
