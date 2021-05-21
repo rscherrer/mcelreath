@@ -36,6 +36,8 @@ library(patchwork)
 
 theme_set(theme_classic())
 
+data(Howell1)
+
 #### Exercise 4E1 ####
 
 # The first line is the likelihood
@@ -299,3 +301,344 @@ p1 / p2 / p3
 ggsave("results/exercise_4M8-2.png", width = 4, height = 6, dpi = 300)
 
 # Does not change much
+
+
+#### Exercise 4H1 ####
+
+# Load the Kalahari data
+data(Howell1)
+data <- Howell1
+
+# Useful values
+mean_weight <- mean(data$weight)
+sd_weight <- sd(data$weight)
+
+# Add standardized and higher order predictors
+data <- data %>%
+  mutate(
+    weight_s = (weight - mean_weight) / sd_weight,
+    weight_s2 = weight_s^2,
+    weight_s3 = weight_s^3
+  )
+
+# Estimate the posterior of a cubic regression
+mod <- quap(
+  flist = alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b1 * weight_s + b2 * weight_s2 + b3 * weight_s3,
+    a ~ dnorm(178, 20),
+    b1 ~ dlnorm(0, 1),
+    b2 ~ dnorm(0, 10),
+    b3 ~ dnorm(0, 10),
+    sigma ~ dunif(0, 50)
+  ),
+  data = data
+)
+
+# New weight entries
+new_weights <- c(46.95, 43.72, 64.78, 32.59, 54.63)
+new_weights_s <- (new_weights - mean_weight) / sd_weight
+
+# Assemble in a data frame
+new_data <- tibble(
+  weight_s = new_weights_s,
+  weight_s2 = weight_s^2,
+  weight_s3 = weight_s^3
+)
+
+# Sample expected heights for the new weights from the posterior
+pred <- link(mod, new_data)
+
+# Get the mean and percentile interval for the expected height
+new_data %>%
+  mutate(mean_height = apply(pred, 2, mean)) %>%
+  cbind(t(apply(pred, 2, PI, prob = 0.89)))
+
+#### Exercise 4H2 ####
+
+# Filter adults out from the Kalahari data
+data <- Howell1
+data <- data %>% filter(age < 18)
+
+# Useful values
+mean_weight <- mean(data$weight)
+sd_weight <- sd(data$weight)
+
+# Standardize weights
+data <- data %>% mutate(weight_s = (weight - mean_weight) / sd_weight)
+
+# Fit a linear regression
+mod <- quap(
+  flist = alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b * weight_s,
+    a ~ dnorm(100, 20),
+    b ~ dlnorm(0, 1),
+    sigma ~ dunif(0, 50)
+  ),
+  data = data
+)
+
+# Extract maximum a posteriori
+map_a <- coef(mod)["a"]
+map_b <- coef(mod)["b"]
+
+# For an increase of 10kg the model predicts an increase in height of (in cm)...
+10 * map_b / sd_weight
+
+# Compute interval for the posterior of the mean
+post_mean_heights <- as_tibble(t(apply(link(mod), 2, PI, prob = 0.89))) %>%
+  rename(pi05_mean_height = "5%", pi94_mean_height = "94%")
+
+# Compute interval for predicted heights
+pred_heights <- as_tibble(t(apply(sim(mod), 2, PI, prob = 0.89))) %>%
+  rename(pi05_pred_height = "5%", pi94_pred_height = "94%")
+
+# Assemble all in one data frame
+data <- data %>%
+  cbind(post_mean_heights, pred_heights) %>%
+  as_tibble()
+
+# Plot all
+data %>%
+  ggplot(aes(x = weight, y = height)) +
+
+  # The raw data
+  geom_point() +
+
+  # MAP regression line
+  geom_abline(
+    intercept = map_a - mean_weight * map_b / sd_weight,
+    slope = map_b / sd_weight
+  ) +
+
+  # 89% PI of the posterior of mean heights as a dark shade
+  geom_ribbon(
+    aes(
+      xmin = weight,
+      xmax = weight,
+      ymin = pi05_mean_height,
+      ymax = pi94_mean_height
+    ),
+    alpha = 0.7
+  ) +
+
+  # 89% PI of simulated (predicted) heights as a lighter shade
+  geom_ribbon(
+    aes(
+      xmin = weight,
+      xmax = weight,
+      ymin = pi05_pred_height,
+      ymax = pi94_pred_height
+    ),
+    alpha = 0.2
+  ) +
+  xlab("Weight (kg)") +
+  ylab("Height (cm)")
+
+ggsave("results/exercise_4H2.png", width = 4, height = 3, dpi = 300)
+
+# The model seems wrong in that the relationship between weight and height is
+# not a straight line. Probably a quadratic or cubic regression would do a
+# better job
+
+#### Exercise 4H3 ####
+
+# Load all the data
+data <- Howell1
+
+# Log-transform the weights
+data <- data %>% mutate(log_weight = log(weight))
+
+# Useful values
+mean_log_weight <- mean(data$log_weight)
+sd_log_weight <- sd(data$log_weight)
+
+# Standardize the predictor
+data <- data %>%
+  mutate(log_weight_s = (log_weight - mean_log_weight) / sd_log_weight)
+
+# Fit a regression
+mod <- quap(
+  flist = alist(
+    height ~ dnorm(mu, sigma),
+    mu <- a + b * log_weight_s,
+    a ~ dnorm(150, 20),
+    b ~ dlnorm(0, 1),
+    sigma ~ dunif(0, 50)
+  ),
+  data = data
+)
+
+# Interpretation:
+# a is the mean height of the population
+# b is the increase in height predicted by the model when the standardized
+# log-weight increases by one unit
+# sigma is the standard deviation of the modelled normal distribution of heights
+# around their predicted mean
+
+# Compute interval for the posterior of the mean
+post_mean_heights <- as_tibble(t(apply(link(mod), 2, PI, prob = 0.97))) %>%
+  rename(pi05_mean_height = "2%", pi94_mean_height = "98%")
+
+# Compute interval for predicted heights
+pred_heights <- as_tibble(t(apply(sim(mod), 2, PI, prob = 0.97))) %>%
+  rename(pi05_pred_height = "2%", pi94_pred_height = "98%")
+
+# Assemble all in one data frame
+data <- data %>%
+  cbind(post_mean_heights, pred_heights) %>%
+  as_tibble()
+
+# Extract MAP coefficients
+map_a <- coef(mod)[["a"]]
+map_b <- coef(mod)[["b"]]
+
+# Plot all (log-scale)
+P1 <- data %>%
+  ggplot(aes(x = log_weight, y = height)) +
+
+  # The raw data
+  geom_point() +
+
+  # MAP regression line
+  geom_abline(
+    intercept = map_a - mean_log_weight * map_b / sd_log_weight,
+    slope = map_b / sd_log_weight
+  ) +
+
+  # 89% PI of the posterior of mean heights as a dark shade
+  geom_ribbon(
+    aes(
+      xmin = log_weight,
+      xmax = log_weight,
+      ymin = pi05_mean_height,
+      ymax = pi94_mean_height
+    ),
+    alpha = 0.7
+  ) +
+
+  # 89% PI of simulated (predicted) heights as a lighter shade
+  geom_ribbon(
+    aes(
+      xmin = log_weight,
+      xmax = log_weight,
+      ymin = pi05_pred_height,
+      ymax = pi94_pred_height
+    ),
+    alpha = 0.2
+  ) +
+  xlab("Log-weight (log-kg)") +
+  ylab("Height (cm)")
+
+# Add a column for MAP mean height
+data <- data %>%
+  mutate(
+    map_mean_height = map_a + map_b * log_weight_s
+  )
+
+# Plot all (normal scale)
+P2 <- data %>%
+  ggplot(aes(x = weight, y = height)) +
+
+  # The raw data
+  geom_point() +
+
+  # MAP nonlinear regression line
+  geom_line(aes(y = map_mean_height)) +
+
+  # 89% PI of the posterior of mean heights as a dark shade
+  geom_ribbon(
+    aes(
+      xmin = weight,
+      xmax = weight,
+      ymin = pi05_mean_height,
+      ymax = pi94_mean_height
+    ),
+    alpha = 0.7
+  ) +
+
+  # 89% PI of simulated (predicted) heights as a lighter shade
+  geom_ribbon(
+    aes(
+      xmin = weight,
+      xmax = weight,
+      ymin = pi05_pred_height,
+      ymax = pi94_pred_height
+    ),
+    alpha = 0.2
+  ) +
+  xlab("Weight (kg)") +
+  ylab("Height (cm)")
+
+P1 / P2
+
+ggsave("results/exercise_4H3.png", width = 4, height = 6, dpi = 300)
+
+#### Exercise 4H4 ####
+
+# Load data
+data <- Howell1
+
+# Standardize weights
+data <- data %>%
+  mutate(weight_s = (weight - mean(weight)) / sd(weight))
+
+# Function to simulate height data from the prior
+sim_from_prior <- function(
+  x, n = 1e3, n_prior = 1e3, mean_a = 178, sd_a = 20, mean_b1 = 0, sd_b1 = 1,
+  mean_b2 = 0, sd_b2 = 1, min_sigma = 0, max_sigma = 50
+) {
+
+  # x is a standardized weight value
+  # n is the number of height values to simulate
+  # n_prior is the number of estimates to sample from the prior distributions
+
+  # Sample prior distributions
+  a <- rnorm(n_prior, mean_a, sd_a)
+  b1 <- rlnorm(n_prior, mean_b1, sd_b1)
+  b2 <- rnorm(n_prior, mean_b2, sd_b2)
+  sigma <- runif(n_prior, min_sigma, max_sigma)
+
+  # Simulate heights
+  rnorm(n = n, mean = a + b1 * x + b2 * x^2, sd = sigma)
+
+}
+
+# Predict 100 prior beliefs on heights for each of the weights in the dataset
+pred_data <- data %>%
+  as_tibble() %>%
+  mutate(
+    pred_height = purrr::map(weight_s, sim_from_prior, n = 100, n_prior = 1000)
+  ) %>%
+  unnest(cols = c(pred_height))
+
+# Plot the data as predicted from the prior
+P1 <- pred_data %>%
+  ggplot(aes(x = weight, y = pred_height)) +
+  geom_point(alpha = 0.2) +
+  geom_point(mapping = aes(y = height), color = "red") +
+  xlab("Weight (kg)") +
+  ylab("Height (cm)") +
+  ggtitle("Prior expectations versus real data")
+
+# Another go with more reasonable priors
+P2 <- data %>%
+  as_tibble() %>%
+  mutate(
+    pred_height = purrr::map(
+      weight_s, sim_from_prior, n = 100, n_prior = 1000, max_sigma = 5,
+      sd_a = 10, mean_a = 150, mean_b1 = 0.5, sd_b1 = 0.1
+    )
+  ) %>%
+  unnest(cols = c(pred_height)) %>%
+  ggplot(aes(x = weight, y = pred_height)) +
+  geom_point(alpha = 0.2) +
+  geom_point(mapping = aes(y = height), color = "red") +
+  xlab("Weight (kg)") +
+  ylab("Height (cm)") +
+  ggtitle("More reasonable priors")
+
+P1 / P2
+
+ggsave("results/exercise_4H4.png", width = 4, height = 6, dpi = 300)
