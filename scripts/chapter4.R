@@ -37,6 +37,7 @@ library(patchwork)
 theme_set(theme_classic())
 
 data(Howell1)
+data(cherry_blossoms)
 
 #### Exercise 4E1 ####
 
@@ -642,3 +643,326 @@ P2 <- data %>%
 P1 / P2
 
 ggsave("results/exercise_4H4.png", width = 4, height = 6, dpi = 300)
+
+
+#### Exercise 4H5 ####
+
+# Load data
+data <- as_tibble(cherry_blossoms)
+
+# Remove missing data
+data <- data %>% drop_na()
+
+# Eyeball
+data %>%
+  ggplot(aes(x = temp, y = doy)) +
+  geom_point()
+
+# Useful values
+mean_temp <- mean(data$temp)
+sd_temp <- sd(data$temp)
+
+# Standardize temperature
+data <- data %>%
+  mutate(temp_s = (temp - mean_temp) / sd_temp)
+
+# Fit a linear regression
+mod_linear <- quap(
+  flist = alist(
+    doy ~ dnorm(mu, sigma),
+    mu <- a + b * temp_s,
+    a ~ dnorm(100, 10),
+    b ~ dnorm(0, 10),
+    sigma ~ dunif(0, 30)
+  ),
+  data = data
+)
+
+# Fit a quadratic regression
+mod_polyn <- quap(
+  flist = alist(
+    doy ~ dnorm(mu, sigma),
+    mu <- a + b1 * temp_s + b2 * temp_s^2,
+    a ~ dnorm(100, 10),
+    b1 ~ dnorm(0, 10),
+    b2 ~ dnorm(0, 1),
+    sigma ~ dunif(0, 30)
+  ),
+  data = data
+)
+
+# Set-up knots for spline regression
+num_knots <- 4
+knots <- quantile(data$temp_s, probs = seq(0, 1, length.out = num_knots))
+
+# Bases of the spline
+bases <- bs(
+  data$temp_s,
+  knots = knots[-c(1, num_knots)],
+  degree = 3,
+  intercept = TRUE
+)
+
+# Fit a spline regression
+mod_splines <- quap(
+  alist(
+    doy ~ dnorm(mu, sigma),
+    mu <- a + base %*% w,
+    a ~ dnorm(100, 10),
+    w ~ dnorm(0, 10),
+    sigma ~ dexp(1)
+  ),
+  data = list(doy = data$doy, base = bases),
+  start = list(w = rep(0, ncol(bases)))
+)
+
+# Function to extract summary on the posterior of the expected response for each
+# value of the predictor
+extract_mu <- function(mod) {
+
+  # Extract summaries of the posterior on the mean
+  post_mu <- link(mod)
+  means <- apply(post_mu, 2, mean)
+  pis <- apply(post_mu, 2, PI, prob = 0.89)
+
+  # Assemble in a tibble and return
+  cbind(means, t(pis)) %>%
+    as_tibble() %>%
+    rename(mean_mu = "means", pi05_mu = "5%", pi94_mu = "94%")
+
+}
+
+# Function to extract intervals of the predicted response
+predict_response <- function(mod) {
+
+  # Extract predictions from the model
+  preds <- sim(mod)
+  means <- apply(preds, 2, mean)
+  pis <- apply(preds, 2, PI, prob = 0.89)
+
+  # Assemble in a tibble and return
+  cbind(means, t(pis)) %>%
+    as_tibble() %>%
+    rename(mean_pred = "means", pi05_pred = "5%", pi94_pred = "94%")
+
+}
+
+# Plot each model with the raw data
+plots <- purrr::map2(
+
+  # Models
+  list(mod_linear, mod_polyn, mod_splines),
+
+  # Respective plot titles
+  c(
+    "Linear regression",
+    "Quadratic regression",
+    "Spline regression (4 knots of degree 3)"
+  ),
+
+  # Function to make each plot
+  function(mod, title) {
+
+    data %>%
+      cbind(
+
+        # Attach the posterior means and the predicted response
+        extract_mu(mod),
+        predict_response(mod)
+
+      ) %>%
+      ggplot(aes(x = temp, y = doy)) +
+      geom_point() +
+
+      # Regression line
+      geom_line(mapping = aes(y = mean_mu)) +
+
+      # Shade representing the posterior distribution of the mean
+      geom_ribbon(
+        mapping = aes(
+          xmin = temp, xmax = temp,
+          ymin = pi05_mu, ymax = pi94_mu
+        ),
+        alpha = 0.7
+      ) +
+
+      # Shade representing the distribution of the prediction
+      geom_ribbon(
+        mapping = aes(
+          xmin = temp, xmax = temp,
+          ymin = pi05_pred, ymax = pi94_pred
+        ),
+        alpha = 0.3
+      ) +
+      xlab("Temperature (C)") +
+      ylab("Day of year") +
+      ggtitle(title)
+
+  }
+)
+
+# Assemble the plots
+plots[[1]] / plots[[2]] / plots[[3]]
+
+# Save them
+ggsave("results/exercise_4H5.png", width = 4, height = 7, dpi = 300)
+
+#### Exercise 4H6 ####
+
+# Load the data
+data <- as_tibble(cherry_blossoms)
+data <- data %>% drop_na()
+
+# Setup the knots
+num_knots <- 15
+knots <- quantile(data$year, probs = seq(0, 1, length.out = num_knots))
+
+# Bases of the spline
+bases <- bs(
+  data$year,
+  knots = knots[-c(1, num_knots)],
+  degree = 3,
+  intercept = TRUE
+)
+
+# Number of predictions per value of the predictor
+n <- 100
+
+# Function to predict and plot data from the prior given parameters for weights
+predict_from_prior <- function(mean_w, sd_w) {
+
+  # mean_w and sd_w are the mean and sd of the normal prior distribution of
+  # knot weights in the spline regression model
+
+  # Predict data from the prior
+  pred_data <- data %>%
+    mutate(
+      pred_doy = purrr::map(seq(n()), function(i) {
+
+        # Simulate n predictions from the prior
+        map_dbl(seq(n), function(j) {
+
+          # Sample model parameters from the prior
+          a <- rnorm(1, 100, 10)
+          w <- rnorm(ncol(bases), mean_w, sd_w)
+          sigma <- rexp(1, 1)
+          mu <- a + bases %*% w
+
+          # Predict a value
+          rnorm(1, mu[i], sigma)
+
+        })
+
+      })
+    ) %>%
+    unnest(cols = c(pred_doy))
+
+  # Plot the prior predictions and the real data
+  pred_data %>%
+    ggplot(aes(x = year, y = pred_doy)) +
+    geom_point(alpha = 0.1) +
+    geom_point(mapping = aes(y = doy), color = "red") +
+    xlab("Year") +
+    ylab("Day of year")
+
+}
+
+# Try out different values
+P1 <- predict_from_prior(0, 1) + ggtitle("Prior weights: mean = 0, s. d. = 1")
+P2 <- predict_from_prior(0, 10) + ggtitle("Prior weights: mean = 0, s. d. = 10")
+P3 <- predict_from_prior(5, 1) + ggtitle("Prior weights: mean = 5, s. d. = 1")
+P4 <- predict_from_prior(5, 10) + ggtitle("Prior weights: mean = 5, s. d. = 10")
+
+# Assemble the plots
+(P1 | P2) / (P3 | P4)
+
+ggsave("results/exercise_4H6.png", width = 8, height = 6, dpi = 300)
+
+#### Exercise 4H7 ####
+
+# Load the data
+data <- as_tibble(cherry_blossoms)
+data <- data %>% drop_na()
+
+# Set-up knots for spline regression
+num_knots <- 15
+knots <- quantile(data$year, probs = seq(0, 1, length.out = num_knots))
+
+# Bases of the spline (without intercept)
+bases <- bs(
+  data$year,
+  knots = knots[-c(1, num_knots)],
+  degree = 3,
+  intercept = FALSE
+)
+
+# Fit a spline regression (omit the intercept)
+mod <- quap(
+  alist(
+    doy ~ dnorm(mu, sigma),
+    mu <- base %*% w,
+    w ~ dnorm(0, 10),
+    sigma ~ dexp(1)
+  ),
+  data = list(doy = data$doy, base = bases),
+  start = list(w = rep(0, ncol(bases)))
+)
+
+# Sample posterior mean outcomes
+post <- link(mod)
+
+# Summarize posterior distributions
+means <- apply(post, 2, mean)
+pis <- apply(post, 2, PI, prob = 0.89)
+
+# Assemble in a tibble
+posteriors <- cbind(means, t(pis)) %>%
+  as_tibble() %>%
+  rename(mean_mu = "means", pi05_mu = "5%", pi94_mu = "94%")
+
+# Predict outcomes from the model
+preds <- sim(mod)
+
+# Summarize predicted distributions
+means <- apply(preds, 2, mean)
+pis <- apply(preds, 2, PI, prob = 0.89)
+
+# Assemble in a tibble
+predictions <- cbind(means, t(pis)) %>%
+  as_tibble() %>%
+  rename(mean_pred = "means", pi05_pred = "5%", pi94_pred = "94%")
+
+# Plot the data and the model
+data %>%
+  cbind(posteriors, predictions) %>%
+  ggplot(aes(x = year, y = doy)) +
+
+  # Observed data
+  geom_point() +
+
+  # Spline regression line
+  geom_line(mapping = aes(y = mean_mu)) +
+
+  # Add a ribbon for the posterior uncertainty
+  geom_ribbon(
+    mapping = aes(
+      xmin = year, xmax = year,
+      ymin = pi05_mu, ymax = pi94_mu
+    ),
+    alpha = 0.7
+  ) +
+
+  # Add a lighter ribbon for the predictions
+  geom_ribbon(
+    mapping = aes(
+      xmin = year, xmax = year,
+      ymin = pi05_pred, ymax = pi94_pred
+    ),
+    alpha = 0.3
+  ) +
+  xlab("Year") +
+  ylab("Day of year") +
+  ggtitle("Spline regression fitted without intercept")
+
+ggsave("results/exercise_4H8.png", width = 4, height = 3, dpi = 300)
+
